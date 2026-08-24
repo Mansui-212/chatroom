@@ -2,6 +2,7 @@
 
 import asyncio
 
+from chat.commands import CommandError, parse_client_command
 from chat.config import HOST, PORT, ENCODING
 from chat.message import create_message
 from chat.protocol import encode_message, read_message
@@ -69,6 +70,19 @@ class ChatClient:
             print(f"{data.get('sender')}: {data.get('content')}")
         elif msg_type == "system":
             print(f"[系统] {data.get('content')}")
+        elif msg_type == "private":
+            print(f"[私聊] {data.get('sender')}: {data.get('content')}")
+        elif msg_type == "rooms":
+            print(data.get("content", "房间列表为空"))
+        elif msg_type == "history":
+            room = data.get("room")
+            print(f"最近聊天（{room}）：")
+            for history_message in data.get("messages", []):
+                history_data = history_message.get("data", {})
+                print(
+                    f"{history_data.get('sender')}: "
+                    f"{history_data.get('content')}"
+                )
         else:
             print(message)
 
@@ -76,20 +90,28 @@ class ChatClient:
         """读取终端输入并转换成聊天消息。"""
 
         while self.running:
-            text = await asyncio.to_thread(input, "> ")
+            try:
+                text = await asyncio.to_thread(input, "> ")
+            except EOFError:
+                self.running = False
+                break
             text = text.strip()
             text = text.encode(ENCODING, errors="ignore").decode(ENCODING)
 
             if not text:
                 continue
 
-            if text.startswith("/nick "):
-                nickname = text[6:].strip()
-                await self.send(create_message("nick", {"name": nickname}))
-            elif text == "/quit":
-                await self.send(create_message("quit", {}))
-                self.running = False
-                break
+            if text.startswith("/"):
+                try:
+                    message = parse_client_command(text)
+                except CommandError as error:
+                    print(f"[系统] {error}")
+                    continue
+
+                await self.send(message)
+                if message["type"] == "quit":
+                    self.running = False
+                    break
             else:
                 await self.send(create_message("chat", {"content": text}))
 

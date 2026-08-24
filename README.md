@@ -1,12 +1,17 @@
 # Chatroom
 
-一个基于 Python `asyncio`、TCP 长连接和命令行的多人聊天室。项目只使用 Python 标准库；目前提供默认 `lobby` 大厅、昵称注册、群聊、断线清理、日志和优雅关闭。
+一个基于 Python `asyncio`、TCP 长连接和命令行的多人聊天室。项目只使用 Python 标准库，支持默认 `lobby` 大厅、动态房间、私聊和最近消息历史。
 
 ## 已实现能力
 
 - TCP 长连接与多客户端并发处理；
 - 4 字节长度前缀 + UTF-8 JSON 的流协议，正确处理粘包和半包；
-- `/nick <昵称>` 注册昵称、普通文本大厅群聊、`/quit` 主动退出；
+- `User` 将昵称、当前房间、角色和网络会话分离，便于后续增加用户等级、状态和权限；
+- 默认 `lobby` 大厅与动态创建的多房间；同一房间内才会收到普通群聊；
+- `/rooms` 查看房间、`/join <房间名>` 加入/创建房间、`/leave` 返回大厅；
+- `/msg <用户> <内容>` 私聊指定在线用户，不会向旁观者广播；
+- 每个房间独立保留最近 100 条普通聊天，新用户进入时自动收到该房间历史；
+- 集中命令表支持 `/nick`、`/rooms`、`/join`、`/leave`、`/msg`、`/quit`，并为管理员 `/kick` 预留权限校验；
 - 重复昵称与未注册聊天的服务端提示；
 - 客户端异常断开后的会话清理和离线通知；
 - 集中配置、文件日志和 `Ctrl+C` 优雅关闭；
@@ -42,7 +47,19 @@ python3 main_client.py
 /nick 李四
 ```
 
-之后直接输入任意文本即可向 `lobby` 大厅广播。输入 `/quit` 可主动断开；服务端按 `Ctrl+C` 会向客户端发送“服务器正在关闭”通知并关闭连接。
+之后直接输入任意文本即可向当前房间广播。常用命令：
+
+```text
+/rooms                 # 查看 lobby 和已创建房间
+/join game             # 加入（不存在则创建）game 房间
+/leave                 # 返回 lobby
+/msg 李四 今天开黑吗    # 向李四发送私聊
+/quit                  # 主动退出
+```
+
+`/join game` 后，只有 `game` 房间成员会收到随后发送的普通消息；该房间已有聊天记录时，进入者会先看到“最近聊天”。服务端按 `Ctrl+C` 会向客户端发送“服务器正在关闭”通知并关闭连接。
+
+管理员通过 `chat/config.py` 的 `ADMIN_NICKNAMES` 显式配置；管理员可使用 `/kick <用户>`，普通用户会收到无权限提示。
 
 ## 通信协议
 
@@ -84,13 +101,18 @@ chatroom/
 │   ├── protocol.py         # TCP 分帧与 JSON 编解码
 │   ├── config.py           # 主机、端口、编码和帧大小配置
 │   ├── logger.py           # 文件与终端日志配置
-│   └── message.py          # 统一消息构造器
+│   ├── message.py          # 统一消息构造器
+│   ├── user.py             # 用户信息与角色
+│   ├── room.py             # 房间成员与独立历史
+│   ├── history.py          # 最近 100 条消息的有界历史
+│   └── commands.py         # 命令解析与服务端分发
 ├── tests/
 │   ├── test_protocol.py
 │   ├── test_integration.py
 │   ├── test_nickname.py
 │   ├── test_chat_permission.py
-│   └── test_disconnect.py
+│   ├── test_disconnect.py
+│   └── test_rooms_private_history.py
 ├── logs/
 │   └── chat.log            # 运行时生成，未纳入 Git
 └── README.md
@@ -104,7 +126,7 @@ chatroom/
 python3 -m unittest discover tests
 ```
 
-当前测试覆盖协议编解码、半包、连续消息、非法 Unicode 清理、双客户端群聊、重复昵称、未注册聊天和异常断开。
+当前测试覆盖协议编解码、半包、连续消息、非法 Unicode 清理、双客户端群聊、重复昵称、未注册聊天、异常断开、跨房间隔离、私聊隔离和 100 条历史限制。
 
 ## 日志
 
@@ -112,4 +134,4 @@ python3 -m unittest discover tests
 
 ## 后续方向
 
-后续可在现有消息格式和服务端业务层上增加多房间、私聊、身份认证、持久化以及 WebSocket 网关，以供 Vue 前端接入。
+后续可在现有用户角色和命令体系上实现管理员初始化、`/ban`、持久化历史及 WebSocket 网关，以供 Vue 前端接入。
