@@ -1,7 +1,8 @@
 import asyncio
 import unittest
 
-from protocol import encode_message, read_message
+from chat.message import create_message
+from chat.protocol import encode_message, read_message
 
 
 
@@ -12,10 +13,10 @@ class TestProtocol(
 
     async def test_encode_decode(self):
 
-        msg = {
-            "type": "chat",
-            "content": "hello"
-        }
+        msg = create_message(
+            "chat",
+            {"content": "hello"},
+        )
 
 
         data = encode_message(msg)
@@ -40,10 +41,10 @@ class TestProtocol(
 
     async def test_half_packet(self):
 
-        msg = {
-            "type":"chat",
-            "content":"半包测试"
-        }
+        msg = create_message(
+            "chat",
+            {"content": "半包测试"},
+        )
 
 
         data = encode_message(msg)
@@ -77,13 +78,15 @@ class TestProtocol(
 
     async def test_two_messages(self):
 
-        msg1 = {
-            "id":1
-        }
+        msg1 = create_message(
+            "system",
+            {"id": 1},
+        )
 
-        msg2 = {
-            "id":2
-        }
+        msg2 = create_message(
+            "system",
+            {"id": 2},
+        )
 
 
         reader = asyncio.StreamReader()
@@ -119,10 +122,10 @@ class TestProtocol(
 
     async def test_surrogate_characters_are_removed(self):
 
-        msg = {
-            "type": "chat",
-            "content": f"你{chr(0xDCE6)}好",
-        }
+        msg = create_message(
+            "chat",
+            {"content": f"你{chr(0xDCE6)}好"},
+        )
 
 
         data = encode_message(msg)
@@ -139,6 +142,6 @@ class TestProtocol(
 
 
         self.assertEqual(
-            result["content"],
+            result["data"]["content"],
             "你好"
         )

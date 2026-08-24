@@ -1,6 +1,8 @@
 import asyncio
 
-from protocol import (
+from chat.logger import logger
+from chat.message import create_message
+from chat.protocol import (
     encode_message,
     read_message,
     ProtocolError,
@@ -68,26 +70,55 @@ class ChatServer:
         self.port = port
 
         self.sessions = set()
+        self._server = None
+        self._is_shutting_down = False
 
 
 
     async def start(self):
 
-        server = await asyncio.start_server(
+        self._server = await asyncio.start_server(
             self.handle_client,
             self.host,
             self.port,
         )
 
 
-        print(
+        logger.info(
             f"Chat server started on {self.host}:{self.port}"
         )
 
 
-        async with server:
+        async with self._server:
 
-            await server.serve_forever()
+            await self._server.serve_forever()
+
+
+    async def shutdown(self):
+        """通知客户端并停止接受新的连接。"""
+
+        if self._is_shutting_down:
+            return
+
+        self._is_shutting_down = True
+        logger.info("Chat server is shutting down")
+
+        await self.broadcast(
+            create_message(
+                "system",
+                {"content": "服务器正在关闭"},
+            )
+        )
+
+        sessions = list(self.sessions)
+        self.sessions.clear()
+
+        for session in sessions:
+            await session.close()
+
+        if self._server is not None:
+            self._server.close()
+            await self._server.wait_closed()
 
 
 
@@ -112,17 +143,18 @@ class ChatServer:
         )
 
 
-        print(
+        logger.info(
             f"client connected: {addr}"
         )
 
 
         await session.send(
-            {
-                "type":"system",
-                "content":
-                "欢迎进入 lobby，请使用 /nick 注册昵称"
-            }
+            create_message(
+                "system",
+                {
+                    "content": "欢迎进入 lobby，请使用 /nick 注册昵称",
+                },
+            )
         )
 
 
@@ -173,12 +205,23 @@ class ChatServer:
             "type"
         )
 
+        data = message.get("data", {})
+
+        if not isinstance(data, dict):
+            await session.send(
+                create_message(
+                    "system",
+                    {"content": "消息格式错误"},
+                )
+            )
+            return
+
 
         if msg_type == "nick":
 
             await self.handle_nick(
                 session,
-                message
+                data
             )
 
 
@@ -186,7 +229,7 @@ class ChatServer:
 
             await self.handle_chat(
                 session,
-                message
+                data
             )
 
 
@@ -210,11 +253,10 @@ class ChatServer:
         if not nickname:
 
             await session.send(
-                {
-                    "type":"system",
-                    "content":
-                    "昵称不能为空"
-                }
+                create_message(
+                    "system",
+                    {"content": "昵称不能为空"},
+                )
             )
 
             return
@@ -226,11 +268,10 @@ class ChatServer:
             if s.nickname == nickname:
 
                 await session.send(
-                    {
-                        "type":"system",
-                        "content":
-                        "昵称已存在"
-                    }
+                    create_message(
+                        "system",
+                        {"content": "昵称已存在"},
+                    )
                 )
 
                 return
@@ -242,11 +283,10 @@ class ChatServer:
 
 
         await self.broadcast(
-            {
-                "type":"system",
-                "content":
-                f"{nickname} 加入大厅"
-            }
+            create_message(
+                "system",
+                {"content": f"{nickname} 加入大厅"},
+            )
         )
 
 
@@ -260,11 +300,10 @@ class ChatServer:
         if not session.nickname:
 
             await session.send(
-                {
-                    "type":"system",
-                    "content":
-                    "请先使用 /nick 注册昵称"
-                }
+                create_message(
+                    "system",
+                    {"content": "请先使用 /nick 注册昵称"},
+                )
             )
 
             return
@@ -277,13 +316,13 @@ class ChatServer:
 
 
         await self.broadcast(
-            {
-                "type":"chat",
-                "sender":
-                    session.nickname,
-                "content":
-                    content,
-            }
+            create_message(
+                "chat",
+                {
+                    "sender": session.nickname,
+                    "content": content,
+                },
+            )
         )
 
 
@@ -347,9 +386,8 @@ class ChatServer:
         if nickname:
 
             await self.broadcast(
-                {
-                    "type":"system",
-                    "content":
-                    f"{nickname} 离开大厅"
-                }
+                create_message(
+                    "system",
+                    {"content": f"{nickname} 离开大厅"},
+                )
             )

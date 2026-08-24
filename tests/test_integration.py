@@ -1,11 +1,12 @@
 import asyncio
 import unittest
 
-from chat.server import ChatServer
-from protocol import (
+from chat.message import create_message
+from chat.protocol import (
     encode_message,
     read_message,
 )
+from chat.server import ChatServer
 
 
 class TestChatIntegration(
@@ -105,10 +106,10 @@ class TestChatIntegration(
         # A注册
         await self.send(
             writer_a,
-            {
-                "type":"nick",
-                "name":"张三"
-            }
+            create_message(
+                "nick",
+                {"name": "张三"},
+            )
         )
 
 
@@ -119,10 +120,10 @@ class TestChatIntegration(
         # B注册
         await self.send(
             writer_b,
-            {
-                "type":"nick",
-                "name":"李四"
-            }
+            create_message(
+                "nick",
+                {"name": "李四"},
+            )
         )
 
 
@@ -146,10 +147,10 @@ class TestChatIntegration(
         # A发送聊天
         await self.send(
             writer_a,
-            {
-                "type":"chat",
-                "content":"你好李四"
-            }
+            create_message(
+                "chat",
+                {"content": "你好李四"},
+            )
         )
 
 
@@ -165,13 +166,13 @@ class TestChatIntegration(
 
 
         self.assertEqual(
-            message["sender"],
+            message["data"]["sender"],
             "张三"
         )
 
 
         self.assertEqual(
-            message["content"],
+            message["data"]["content"],
             "你好李四"
         )
 
@@ -180,9 +181,7 @@ class TestChatIntegration(
         # A退出
         await self.send(
             writer_a,
-            {
-                "type":"quit"
-            }
+            create_message("quit", {})
         )
 
 
@@ -201,10 +200,10 @@ class TestChatIntegration(
         # B仍然可用
         await self.send(
             writer_b,
-            {
-                "type":"chat",
-                "content":"张三退出后继续聊天"
-            }
+            create_message(
+                "chat",
+                {"content": "张三退出后继续聊天"},
+            )
         )
 
 
@@ -225,7 +224,7 @@ class TestChatIntegration(
 
 
         self.assertEqual(
-            message["content"],
+            message["data"]["content"],
             "张三退出后继续聊天"
         )
 
