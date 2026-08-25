@@ -26,7 +26,7 @@ class ClientSession:
         self.reader = reader
         self.writer = writer
         self.server = server
-        self.user = User(id=user_id, session=self)
+        self.user = User(id=user_id, tcp_session=self)
 
     # 保留旧属性的兼容入口，业务代码统一使用 session.user。
     @property
@@ -69,7 +69,7 @@ class ChatServer:
         self.port = port
 
         self.sessions: set[ClientSession] = set()
-        self.users: dict[str, ClientSession] = {}
+        self.users: dict[str, User] = {}
         self.rooms: dict[str, Room] = {"lobby": Room("lobby")}
 
         self._next_user_id = 1
@@ -147,6 +147,12 @@ class ChatServer:
             await self.send_system(session, "消息格式错误")
             return
 
+        if msg_type == "udp_register":
+            await self.handle_udp_register(session, data)
+            return
+        if msg_type == "find_user":
+            await self.handle_find_user(session, data)
+            return
         if await dispatch_command(msg_type, self, session, data):
             return
 
@@ -173,7 +179,7 @@ class ChatServer:
         session.user.nickname = nickname
         if nickname in ADMIN_NICKNAMES:
             session.user.role = "admin"
-        self.users[nickname] = session
+        self.users[nickname] = session.user
 
         await self.send_room_history(session, self.rooms[session.user.current_room])
         await self.broadcast_to_room(
@@ -273,42 +279,108 @@ class ChatServer:
 
         await self.handle_join(session, {"room": "lobby"})
 
-    async def handle_private_message(
+    async def handle_udp_register(
         self,
         session: ClientSession,
         message: dict,
     ) -> None:
-        if not await self.require_registered(session):
+        """登记客户端 UDP 端口，IP 使用 TCP 连接的对端地址。"""
+
+        port = message.get("port")
+        if isinstance(port, bool) or not isinstance(port, int):
+            await self.send_system(session, "UDP 端口格式错误")
+            return
+        if not 1 <= port <= 65535:
+            await self.send_system(session, "UDP 端口范围错误")
             return
 
-        target_name = message.get("target")
-        content = message.get("content")
+        peername = session.writer.get_extra_info("peername")
+        if not peername:
+            await self.send_system(session, "无法获取 UDP 地址")
+            return
+
+        session.user.udp_address = (peername[0], port)
+        logger.info(
+            "UDP registered: user=%s address=%s:%s",
+            session.user.nickname or f"#{session.user.id}",
+            peername[0],
+            port,
+        )
+
+    async def handle_find_user(
+        self,
+        session: ClientSession,
+        message: dict,
+    ) -> None:
+        """仅返回目标 UDP 地址，绝不通过 TCP 转发私聊正文。"""
+
+        target_name = message.get("name")
         if not isinstance(target_name, str) or not (target_name := target_name.strip()):
-            await self.send_system(session, "私聊目标不能为空")
-            return
-        if not isinstance(content, str) or not (content := content.strip()):
-            await self.send_system(session, "私聊内容不能为空")
-            return
-
-        target = self.users.get(target_name)
-        if target is None or target not in self.sessions:
-            await self.send_system(session, f"用户 {target_name} 不在线")
-            return
-
-        try:
-            await target.send(
+            await session.send(
                 create_message(
-                    "private",
+                    "user_found",
+                    {"name": "", "udp": None, "error": "用户不能为空"},
+                )
+            )
+            return
+
+        if not session.user.nickname:
+            await session.send(
+                create_message(
+                    "user_found",
                     {
-                        "sender": session.user.nickname,
-                        "content": content,
-                        "target": target_name,
+                        "name": target_name,
+                        "udp": None,
+                        "error": "请先使用 /nick 注册昵称",
                     },
                 )
             )
-        except (ConnectionError, OSError, RuntimeError):
-            await self.remove_session(target)
-            await self.send_system(session, f"用户 {target_name} 不在线")
+            return
+
+        target = self.users.get(target_name)
+        if target is None or target.tcp_session not in self.sessions:
+            await session.send(
+                create_message(
+                    "user_found",
+                    {
+                        "name": target_name,
+                        "udp": None,
+                        "error": f"用户 {target_name} 不在线",
+                    },
+                )
+            )
+            return
+        if target.udp_address is None:
+            await session.send(
+                create_message(
+                    "user_found",
+                    {
+                        "name": target_name,
+                        "udp": None,
+                        "error": f"用户 {target_name} 未启用 UDP 私聊",
+                    },
+                )
+            )
+            return
+
+        host, port = target.udp_address
+        await session.send(
+            create_message(
+                "user_found",
+                {
+                    "name": target_name,
+                    "udp": [host, port],
+                    "requester": session.user.nickname,
+                },
+            )
+        )
+        logger.info("UDP peer lookup: %s -> %s", session.user.nickname, target_name)
+
+    async def handle_pmsg(self, session: ClientSession) -> None:
+        """拒绝经 TCP 传来的私聊正文，防止服务端退化为转发节点。"""
+
+        if await self.require_registered(session):
+            await self.send_system(session, "请使用支持 UDP 的客户端发送 /pmsg")
 
     async def handle_kick(self, session: ClientSession, message: dict) -> None:
         """管理员预留命令：普通用户无法移除其他用户。"""
@@ -325,15 +397,19 @@ class ChatServer:
             return
 
         target = self.users.get(target_name)
-        if target is None or target not in self.sessions:
+        if target is None or target.tcp_session not in self.sessions:
             await self.send_system(session, f"用户 {target_name} 不在线")
             return
-        if target is session:
+        if target is session.user:
             await self.send_system(session, "不能踢出自己")
             return
 
-        await self.send_system(target, "你已被管理员移出聊天室")
-        await self.remove_session(target)
+        target_session = target.tcp_session
+        if target_session is None:
+            await self.send_system(session, f"用户 {target_name} 不在线")
+            return
+        await self.send_system(target_session, "你已被管理员移出聊天室")
+        await self.remove_session(target_session)
 
     async def require_registered(self, session: ClientSession) -> bool:
         if session.user.nickname:
@@ -362,7 +438,7 @@ class ChatServer:
 
         dead_sessions: list[ClientSession] = []
         for user in list(room.members):
-            session = user.session
+            session = user.tcp_session
             if session is None or session not in self.sessions:
                 continue
             try:
@@ -403,9 +479,10 @@ class ChatServer:
             room.remove_member(user)
 
         nickname = user.nickname
-        if nickname and self.users.get(nickname) is session:
+        if nickname and self.users.get(nickname) is user:
             del self.users[nickname]
-        user.session = None
+        user.tcp_session = None
+        user.udp_address = None
 
         await session.close()
 

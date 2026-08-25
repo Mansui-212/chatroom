@@ -1,17 +1,19 @@
 # Chatroom
 
-一个基于 Python `asyncio`、TCP 长连接和命令行的多人聊天室。项目只使用 Python 标准库，支持默认 `lobby` 大厅、动态房间、私聊和最近消息历史。
+一个基于 Python `asyncio`、TCP 长连接和命令行的多人聊天室。TCP 负责登录、房间群聊和在线用户管理；UDP 负责局域网客户端之间的点对点私聊。
 
 ## 已实现能力
 
 - TCP 长连接与多客户端并发处理；
 - 4 字节长度前缀 + UTF-8 JSON 的流协议，正确处理粘包和半包；
-- `User` 将昵称、当前房间、角色和网络会话分离，便于后续增加用户等级、状态和权限；
+- `User` 将昵称、TCP 会话、UDP 地址、当前房间和角色分离；
 - 默认 `lobby` 大厅与动态创建的多房间；同一房间内才会收到普通群聊；
 - `/rooms` 查看房间、`/join <房间名>` 加入/创建房间、`/leave` 返回大厅；
-- `/msg <用户> <内容>` 私聊指定在线用户，不会向旁观者广播；
+- `/pmsg <用户> <内容>` 先经 TCP 查询目标 UDP 地址，再由客户端直接发送私聊正文；服务器不会转发私聊内容；
+- UDP 私聊消息有唯一 ID，接收端自动回复 ACK；3 秒未确认会重发，达到重试上限后在发送端提示失败；
+- 私聊历史仅保存在各客户端的 `local_history`，不会上传到服务器；
 - 每个房间独立保留最近 100 条普通聊天，新用户进入时自动收到该房间历史；
-- 集中命令表支持 `/nick`、`/rooms`、`/join`、`/leave`、`/msg`、`/quit`，并为管理员 `/kick` 预留权限校验；
+- 集中命令表支持 `/nick`、`/rooms`、`/join`、`/leave`、`/pmsg`、`/quit`，并为管理员 `/kick` 预留权限校验；
 - 重复昵称与未注册聊天的服务端提示；
 - 客户端异常断开后的会话清理和离线通知；
 - 集中配置、文件日志和 `Ctrl+C` 优雅关闭；
@@ -53,11 +55,11 @@ python3 main_client.py
 /rooms                 # 查看 lobby 和已创建房间
 /join game             # 加入（不存在则创建）game 房间
 /leave                 # 返回 lobby
-/msg 李四 今天开黑吗    # 向李四发送私聊
+/pmsg 李四 今天开黑吗   # TCP 查地址后通过 UDP 直连李四
 /quit                  # 主动退出
 ```
 
-`/join game` 后，只有 `game` 房间成员会收到随后发送的普通消息；该房间已有聊天记录时，进入者会先看到“最近聊天”。服务端按 `Ctrl+C` 会向客户端发送“服务器正在关闭”通知并关闭连接。
+`/join game` 后，只有 `game` 房间成员会收到随后发送的普通消息；该房间已有聊天记录时，进入者会先看到“最近聊天”。每个客户端启动时会绑定一个可用 UDP 端口，并将端口登记给服务端；`/pmsg` 的聊天正文只在两个客户端之间传输。服务端按 `Ctrl+C` 会向客户端发送“服务器正在关闭”通知并关闭连接。
 
 管理员通过 `chat/config.py` 的 `ADMIN_NICKNAMES` 显式配置；管理员可使用 `/kick <用户>`，普通用户会收到无权限提示。
 
@@ -88,6 +90,20 @@ TCP 是字节流，因此每条应用消息采用以下帧格式：
 }
 ```
 
+UDP 私聊不使用 TCP 帧，而是单个 JSON 数据报：
+
+```json
+{
+  "type": "private",
+  "id": 10001,
+  "from": "张三",
+  "content": "你好",
+  "time": 1780000000
+}
+```
+
+接收客户端向 UDP 源地址回复 `{"type": "ack", "id": 10001}`。TCP 仅传递 `udp_register`（登记端口）和 `find_user` / `user_found`（查询地址）控制消息。
+
 ## 项目结构
 
 ```text
@@ -104,6 +120,8 @@ chatroom/
 │   ├── message.py          # 统一消息构造器
 │   ├── user.py             # 用户信息与角色
 │   ├── room.py             # 房间成员与独立历史
+│   ├── udp.py              # UDP JSON 收发与监听
+│   ├── peer.py             # P2P 私聊、ACK 和重试
 │   ├── history.py          # 最近 100 条消息的有界历史
 │   └── commands.py         # 命令解析与服务端分发
 ├── tests/
@@ -112,7 +130,8 @@ chatroom/
 │   ├── test_nickname.py
 │   ├── test_chat_permission.py
 │   ├── test_disconnect.py
-│   └── test_rooms_private_history.py
+│   ├── test_rooms_private_history.py
+│   └── test_udp_p2p.py
 ├── logs/
 │   └── chat.log            # 运行时生成，未纳入 Git
 └── README.md
@@ -126,7 +145,7 @@ chatroom/
 python3 -m unittest discover tests
 ```
 
-当前测试覆盖协议编解码、半包、连续消息、非法 Unicode 清理、双客户端群聊、重复昵称、未注册聊天、异常断开、跨房间隔离、私聊隔离和 100 条历史限制。
+当前测试覆盖协议编解码、半包、连续消息、非法 Unicode 清理、双客户端群聊、重复昵称、未注册聊天、异常断开、跨房间隔离、100 条历史限制、UDP 收发、ACK 确认、超时失败及 TCP 查址后的 UDP 点对点私聊。
 
 ## 日志
 

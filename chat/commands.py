@@ -88,9 +88,9 @@ class LeaveCommand(Command):
         await server.handle_leave(session)
 
 
-class MsgCommand(Command):
-    name = "msg"
-    usage = "/msg <用户> <内容>"
+class PmsgCommand(Command):
+    name = "pmsg"
+    usage = "/pmsg <用户> <内容>"
 
     def build_message(self, arguments: str) -> dict:
         target, separator, content = arguments.strip().partition(" ")
@@ -103,7 +103,8 @@ class MsgCommand(Command):
         )
 
     async def execute(self, server, session, data) -> None:
-        await server.handle_private_message(session, data)
+        # 正常客户端不会把内容发给 TCP 服务端；该分支只防止旧客户端误用。
+        await server.handle_pmsg(session)
 
 
 class QuitCommand(Command):
@@ -139,7 +140,7 @@ COMMANDS: dict[str, Command] = {
         RoomsCommand(),
         JoinCommand(),
         LeaveCommand(),
-        MsgCommand(),
+        PmsgCommand(),
         QuitCommand(),
         KickCommand(),
     )

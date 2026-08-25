@@ -92,6 +92,15 @@ class TestRoomsPrivateAndHistory(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(rooms["data"]["rooms"], ["game", "lobby"])
 
+        await self.send(writer_b, create_message("join", {"room": "music"}))
+        await self.read_until(
+            reader_b,
+            lambda message: (
+                message["type"] == "system"
+                and message["data"]["content"] == "B进入music房间"
+            ),
+        )
+
         await self.send(writer_a, create_message("chat", {"content": "hello game"}))
         received = await self.read_until(
             reader_a,
@@ -103,31 +112,32 @@ class TestRoomsPrivateAndHistory(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(asyncio.TimeoutError):
             await asyncio.wait_for(read_message(reader_b), timeout=0.1)
 
-    async def test_private_message_only_reaches_target(self):
+    async def test_tcp_does_not_forward_pmsg_content(self):
         reader_a, writer_a = await self.connect_client()
         reader_b, writer_b = await self.connect_client()
-        reader_c, writer_c = await self.connect_client()
         await self.register_all(
             [
                 ("A", reader_a, writer_a),
                 ("B", reader_b, writer_b),
-                ("C", reader_c, writer_c),
             ]
         )
 
         await self.send(
             writer_a,
-            create_message("msg", {"target": "B", "content": "你好"}),
+            create_message("pmsg", {"target": "B", "content": "你好"}),
         )
         message = await self.read_until(
-            reader_b,
-            lambda received: received["type"] == "private",
+            reader_a,
+            lambda received: (
+                received["type"] == "system"
+                and received["data"]["content"]
+                == "请使用支持 UDP 的客户端发送 /pmsg"
+            ),
         )
-        self.assertEqual(message["data"]["sender"], "A")
-        self.assertEqual(message["data"]["content"], "你好")
+        self.assertEqual(message["type"], "system")
 
         with self.assertRaises(asyncio.TimeoutError):
-            await asyncio.wait_for(read_message(reader_c), timeout=0.1)
+            await asyncio.wait_for(read_message(reader_b), timeout=0.1)
 
     async def test_join_receives_only_latest_100_history_messages(self):
         reader_a, writer_a = await self.connect_client()
